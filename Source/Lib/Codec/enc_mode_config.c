@@ -1506,6 +1506,7 @@ static uint8_t svt_aom_get_wn_filter_level(EncMode enc_mode, uint8_t input_resol
     } else if (enc_mode <= ENC_M3)
         wn_filter_lvl = is_not_last_layer ? 4 : 0;
     else if ((enc_mode <= ENC_M8 && !rtc_tune) || (enc_mode <= ENC_M6 && rtc_tune))
+        wn_filter_lvl = is_not_last_layer ? 5 : 0;
     } else {
         wn_filter_lvl = 0;
     }
