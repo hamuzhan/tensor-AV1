@@ -1180,6 +1180,9 @@ typedef struct PictureControlSetInitData {
     bool    allintra;
     bool    adaptive_film_grain;
     bool    use_flat_ipp;
+
+    QualityZone* zones;
+    uint16_t     num_zones;
 } PictureControlSetInitData;
 
 /**************************************
