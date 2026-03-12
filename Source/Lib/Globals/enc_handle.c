@@ -22,6 +22,9 @@
 #include "svt_threads.h"
 #include "utility.h"
 #include "enc_handle.h"
+#ifdef ENABLE_DATA_COLLECTION
+#include "data_collector.h"
+#endif
 #include "enc_settings.h"
 #include "pcs.h"
 #include "pic_operators.h"
@@ -1271,6 +1274,30 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
     // Per-instance block geometry table allocation
     EB_MALLOC_ARRAY(scs->blk_geom_mds, scs->max_block_cnt);
     svt_aom_build_blk_geom(scs->svt_aom_geom_idx, scs->blk_geom_mds);
+#ifdef ENABLE_DATA_COLLECTION
+    {
+        const char* dc_path = getenv("SVT_AV1_DC_OUTPUT_PATH");
+        if (!dc_path)
+            dc_path = "svt_av1_training_data.h5";
+        // Compute b64/sb counts ourselves since they aren't set until resource_coordination
+        uint16_t b64_size = 64;
+        uint16_t computed_b64_total = (uint16_t)(((scs->max_input_luma_width + b64_size - 1) / b64_size) *
+                                                 ((scs->max_input_luma_height + b64_size - 1) / b64_size));
+        uint16_t computed_sb_total = (uint16_t)(((scs->max_input_luma_width + scs->sb_size - 1) / scs->sb_size) *
+                                                ((scs->max_input_luma_height + scs->sb_size - 1) / scs->sb_size));
+        EbErrorType dc_err = dc_init(&enc_handle_ptr->dc_ctx, dc_path,
+                                     scs->max_input_luma_width,
+                                     scs->max_input_luma_height,
+                                     (uint8_t)scs->encoder_bit_depth,
+                                     computed_b64_total,
+                                     computed_sb_total,
+                                     (uint8_t)scs->sb_size, 32);
+        if (dc_err == EB_ErrorNone)
+            scs->dc_ctx = enc_handle_ptr->dc_ctx;
+        else
+            enc_handle_ptr->dc_ctx = NULL;
+    }
+#endif
     /************************************
      * Sequence Control Set
      ************************************/
@@ -2073,6 +2100,12 @@ EB_API EbErrorType svt_av1_enc_deinit(EbComponentType* svt_enc_component) {
         }
     }
 
+#ifdef ENABLE_DATA_COLLECTION
+    if (handle->dc_ctx) {
+        dc_destroy(handle->dc_ctx);
+        handle->dc_ctx = NULL;
+    }
+#endif
     // Free per-instance block geometry table
     if (handle->scs_instance && handle->scs_instance->scs && handle->scs_instance->scs->blk_geom_mds != NULL) {
         EB_FREE_ARRAY(handle->scs_instance->scs->blk_geom_mds);

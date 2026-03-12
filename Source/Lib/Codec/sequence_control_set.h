@@ -315,6 +315,9 @@ typedef struct SequenceControlSet {
     bool use_flat_ipp;
     // If true, enables fast anti-alias aware screen detection
     bool fast_aa_aware_screen_detection_mode;
+#ifdef ENABLE_DATA_COLLECTION
+    struct DataCollectionContext* dc_ctx;
+#endif
 } SequenceControlSet;
 
 typedef struct EbSequenceControlSetInstance {

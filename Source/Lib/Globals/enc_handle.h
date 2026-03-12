@@ -124,6 +124,9 @@ struct _EbEncHandle {
     bool eos_sent; // used to signal we sent the EOS to the app
     bool frame_received; // used to signal we received any frame from the app
     bool is_prev_valid; // whether the previous input is valid or not
+#ifdef ENABLE_DATA_COLLECTION
+    struct DataCollectionContext* dc_ctx;
+#endif
 };
 
 void set_segments_numbers(SequenceControlSet* scs);

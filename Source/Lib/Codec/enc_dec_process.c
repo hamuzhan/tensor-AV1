@@ -32,6 +32,10 @@
 
 #include "pack_unpack_c.h"
 #include "deblocking_filter.h"
+#ifdef ENABLE_DATA_COLLECTION
+#include "data_collector.h"
+#include "partition_tree_flatten.h"
+#endif
 
 static void copy_mv_rate(PictureControlSet* pcs, MdRateEstimationContext* dst_rate) {
     FrameHeader* frm_hdr = &pcs->ppcs->frm_hdr;
@@ -3120,6 +3124,36 @@ void* svt_aom_mode_decision_kernel(void* input_ptr) {
                         }
                         if (sb_index == 0) {
                             pcs->ppcs->pcs_total_rate = 0;
+#ifdef ENABLE_DATA_COLLECTION
+                            if (scs->dc_ctx) {
+                                FrameDataCollector* fc = dc_get_collector(scs->dc_ctx, ppcs->picture_number);
+                                if (fc && !fc->metadata_set) {
+                                    DcFrameMetadata meta;
+                                    memset(&meta, 0, sizeof(meta));
+                                    meta.picture_number      = ppcs->picture_number;
+                                    meta.decode_order        = ppcs->decode_order;
+                                    meta.cur_order_hint      = ppcs->cur_order_hint;
+                                    meta.slice_type          = ppcs->slice_type;
+                                    meta.temporal_layer_index = ppcs->temporal_layer_index;
+                                    meta.is_ref              = ppcs->is_ref;
+                                    meta.idr_flag            = ppcs->idr_flag;
+                                    meta.cra_flag            = ppcs->cra_flag;
+                                    meta.scene_change_flag   = ppcs->scene_change_flag;
+                                    meta.hierarchical_levels = ppcs->hierarchical_levels;
+                                    meta.qp                  = (uint8_t)ppcs->picture_qp;
+                                    meta.frame_width         = ppcs->frame_width;
+                                    meta.frame_height        = ppcs->frame_height;
+                                    meta.bit_depth           = (uint8_t)scs->encoder_bit_depth;
+                                    meta.ref_list0_count     = ppcs->ref_list0_count;
+                                    meta.ref_list1_count     = ppcs->ref_list1_count;
+                                    for (int i = 0; i < ppcs->ref_list0_count && i < DC_MAX_REFS_PER_LIST; i++)
+                                        meta.ref_pic_poc[0][i] = ppcs->ref_pic_poc_array[0][i];
+                                    for (int i = 0; i < ppcs->ref_list1_count && i < DC_MAX_REFS_PER_LIST; i++)
+                                        meta.ref_pic_poc[1][i] = ppcs->ref_pic_poc_array[1][i];
+                                    dc_record_frame_metadata(fc, &meta);
+                                }
+                            }
+#endif
                         }
                         ed_ctx->coded_area_sb_update    = 0;
                         ed_ctx->coded_area_sb_uv_update = 0;
@@ -3139,6 +3173,23 @@ void* svt_aom_mode_decision_kernel(void* input_ptr) {
                                           sb_ptr->ptree,
                                           md_ctx->sb_origin_y >> 2,
                                           md_ctx->sb_origin_x >> 2);
+#ifdef ENABLE_DATA_COLLECTION
+                        if (scs->dc_ctx) {
+                            FrameDataCollector* fc = dc_get_collector(scs->dc_ctx, ppcs->picture_number);
+                            if (fc) {
+                                DcPartitionData part_data;
+                                memset(&part_data, 0, sizeof(part_data));
+                                dc_flatten_partition_tree(md_ctx->pc_tree, &part_data,
+                                                         md_ctx->sb_origin_y >> 2,
+                                                         md_ctx->sb_origin_x >> 2,
+                                                         sb_size_log2);
+                                part_data.sb_origin_x = (uint16_t)md_ctx->sb_origin_x;
+                                part_data.sb_origin_y = (uint16_t)md_ctx->sb_origin_y;
+                                part_data.valid = 1;
+                                dc_record_partition_sb(fc, sb_index, &part_data);
+                            }
+                        }
+#endif
                         // free MD palette info buffer
                         if (pcs->ppcs->palette_level) {
                             const uint16_t max_block_cnt = scs->max_block_cnt;
@@ -3213,6 +3264,13 @@ void* svt_aom_mode_decision_kernel(void* input_ptr) {
             svt_release_mutex(pcs->intra_mutex);
 
             if (last_sb_flag) {
+#ifdef ENABLE_DATA_COLLECTION
+                if (scs->dc_ctx) {
+                    FrameDataCollector* fc = dc_get_collector(scs->dc_ctx, ppcs->picture_number);
+                    if (fc)
+                        dc_signal_enc_complete(scs->dc_ctx, fc);
+                }
+#endif
                 bool do_recode = false;
                 if ((scs->static_config.rate_control_mode == SVT_AV1_RC_MODE_VBR ||
                      scs->static_config.max_bit_rate != 0) &&

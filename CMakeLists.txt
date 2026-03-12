@@ -65,6 +65,11 @@ if(RTC_BUILD)
     add_definitions(-DRTC_BUILD=1)
 endif()
 
+option(ENABLE_DATA_COLLECTION "Enable ML data collection hooks for training" OFF)
+if(ENABLE_DATA_COLLECTION)
+    add_definitions(-DENABLE_DATA_COLLECTION=1)
+endif()
+
 if(NOT COMPILE_C_ONLY AND HAVE_X86_PLATFORM)
     include(CheckLanguage)
     check_language(ASM_NASM)

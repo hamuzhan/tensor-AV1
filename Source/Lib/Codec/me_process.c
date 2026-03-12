@@ -33,6 +33,10 @@
 #include "firstpass.h"
 #include "initial_rc_process.h"
 #include "enc_mode_config.h"
+#ifdef ENABLE_DATA_COLLECTION
+#include "data_collector.h"
+#include "me_data_extract.h"
+#endif
 
 /* --32x32-
 |00||01|
@@ -262,7 +266,17 @@ void* svt_aom_motion_estimation_kernel(void* input_ptr) {
 
                             svt_aom_motion_estimation_b64(
                                 pcs, b64_index, b64_origin_x, b64_origin_y, me_context_ptr->me_ctx, input_pic);
-
+#ifdef ENABLE_DATA_COLLECTION
+                            if (scs->dc_ctx) {
+                                FrameDataCollector* fc = dc_get_collector(scs->dc_ctx, pcs->picture_number);
+                                if (fc) {
+                                    DcMeData me_data;
+                                    dc_extract_me_data(me_context_ptr->me_ctx, pcs, &me_data,
+                                                       b64_origin_x, b64_origin_y);
+                                    dc_record_me_sb(fc, b64_index, &me_data);
+                                }
+                            }
+#endif
                             if ((in_results_ptr->task_type == TASK_PAME) ||
                                 (in_results_ptr->task_type == TASK_SUPERRES_RE_ME)) {
                                 svt_block_on_mutex(pcs->me_processed_b64_mutex);
@@ -276,6 +290,13 @@ void* svt_aom_motion_estimation_kernel(void* input_ptr) {
                                         memset(
                                             pcs->is_global_motion, false, MAX_NUM_OF_REF_PIC_LIST * REF_LIST_MAX_DEPTH);
                                     }
+#ifdef ENABLE_DATA_COLLECTION
+                                    if (scs->dc_ctx) {
+                                        FrameDataCollector* fc = dc_get_collector(scs->dc_ctx, pcs->picture_number);
+                                        if (fc)
+                                            dc_signal_me_complete(scs->dc_ctx, fc);
+                                    }
+#endif
                                 }
 
                                 svt_release_mutex(pcs->me_processed_b64_mutex);

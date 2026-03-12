@@ -36,6 +36,9 @@ endif()
 add_subdirectory(C_DEFAULT)
 add_subdirectory(Codec)
 add_subdirectory(Globals)
+if(ENABLE_DATA_COLLECTION)
+    add_subdirectory(DataCollect)
+endif()
 if(NOT COMPILE_C_ONLY AND HAVE_X86_PLATFORM)
     # Include Encoder Subdirectories
     target_include_directories(SvtAv1Enc PRIVATE
@@ -103,6 +106,15 @@ elseif(NOT COMPILE_C_ONLY AND HAVE_ARM_PLATFORM)
     if(ENABLE_SVE2)
         target_sources(SvtAv1Enc PRIVATE $<TARGET_OBJECTS:ASM_SVE2>)
     endif()
+endif()
+
+if(ENABLE_DATA_COLLECTION)
+    find_package(HDF5 REQUIRED COMPONENTS C)
+    target_sources(SvtAv1Enc PRIVATE $<TARGET_OBJECTS:DATA_COLLECT>)
+    target_link_libraries(SvtAv1Enc PRIVATE ${HDF5_C_LIBRARIES})
+    target_include_directories(SvtAv1Enc PRIVATE
+        ${PROJECT_SOURCE_DIR}/Source/Lib/DataCollect/
+        ${HDF5_C_INCLUDE_DIRS})
 endif()
 
 get_target_property(common_lib_source common_lib INTERFACE_SOURCES)

@@ -47,4 +47,8 @@ if (BUILD_SHARED_LIBS)
                 PUBLIC EB_DLL
                 PRIVATE EB_BUILDING_SHARED_LIBS)
 endif()
+if(ENABLE_DATA_COLLECTION)
+    target_include_directories(GLOBALS PRIVATE
+        ${PROJECT_SOURCE_DIR}/Source/Lib/DataCollect/)
+endif()
 add_dependencies(GLOBALS EbVersionHeaderGen)

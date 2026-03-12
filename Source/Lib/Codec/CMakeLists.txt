@@ -298,3 +298,7 @@ set(all_files
         )
 
 add_library(CODEC OBJECT ${all_files})
+if(ENABLE_DATA_COLLECTION)
+    target_include_directories(CODEC PRIVATE
+        ${PROJECT_SOURCE_DIR}/Source/Lib/DataCollect/)
+endif()
