@@ -270,6 +270,8 @@ void dc_flatten_partition_tree(const PC_TREE* pc_tree,
 
     flatten_recursive(pc_tree, out, mi_row_start, mi_col_start,
                       mi_row_start, mi_col_start, 0);
+
+    out->valid = 1;
 }
 
 #endif // ENABLE_DATA_COLLECTION

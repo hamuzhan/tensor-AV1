@@ -14,6 +14,146 @@
 #include <stdlib.h>
 #include <string.h>
 
+// ---------- Frame Validation ----------
+
+// Returns: 0 = valid, -1 = critical error (drop frame), -2 = warnings (still writable)
+static int dc_validate_frame(const DataCollectionContext* ctx,
+                              const FrameDataCollector* fc) {
+    int warnings = 0;
+    uint64_t pic = fc->picture_number;
+
+    // 1. Metadata sanity
+    if (fc->metadata.qp > DC_MAX_QP) {
+        SVT_WARN("DC: Frame %llu: invalid QP %u\n",
+                 (unsigned long long)pic, fc->metadata.qp);
+        return -1;
+    }
+    if (fc->metadata.slice_type > DC_MAX_SLICE_TYPE) {
+        SVT_WARN("DC: Frame %llu: invalid slice_type %u\n",
+                 (unsigned long long)pic, fc->metadata.slice_type);
+        return -1;
+    }
+    if (fc->metadata.temporal_layer_index > DC_MAX_TEMPORAL_LAYER) {
+        SVT_WARN("DC: Frame %llu: invalid temporal_layer %u\n",
+                 (unsigned long long)pic, fc->metadata.temporal_layer_index);
+        return -1;
+    }
+    if (fc->metadata.ref_list0_count > DC_MAX_REFS_PER_LIST ||
+        fc->metadata.ref_list1_count > DC_MAX_REFS_PER_LIST) {
+        SVT_WARN("DC: Frame %llu: invalid ref counts L0=%u L1=%u\n",
+                 (unsigned long long)pic,
+                 fc->metadata.ref_list0_count, fc->metadata.ref_list1_count);
+        return -1;
+    }
+
+    // 2. ME data completeness and value range
+    for (uint16_t b64 = 0; b64 < ctx->b64_total_count; b64++) {
+        const DcMeData* me = &fc->me_data[b64];
+        if (!me->valid) {
+            SVT_WARN("DC: Frame %llu: ME b64[%u] not valid\n",
+                     (unsigned long long)pic, b64);
+            return -1;
+        }
+        // Spot-check MV range on first PU of each active reference
+        for (int list = 0; list < DC_MAX_REF_LISTS; list++) {
+            uint8_t nrefs = me->num_refs[list];
+            if (nrefs > DC_MAX_REFS_PER_LIST)
+                nrefs = DC_MAX_REFS_PER_LIST;
+            for (int ref = 0; ref < nrefs; ref++) {
+                int16_t mvx = me->best_mv[list][ref][0].x;
+                int16_t mvy = me->best_mv[list][ref][0].y;
+                if (mvx <= -DC_MV_LIMIT || mvx >= DC_MV_LIMIT ||
+                    mvy <= -DC_MV_LIMIT || mvy >= DC_MV_LIMIT) {
+                    SVT_WARN("DC: Frame %llu: ME b64[%u] MV out of range "
+                             "L%d R%d (%d,%d)\n",
+                             (unsigned long long)pic, b64, list, ref, mvx, mvy);
+                    warnings = 1;
+                }
+            }
+        }
+    }
+
+    // 3. Partition data completeness and value range
+    for (uint16_t sb = 0; sb < ctx->sb_total_count; sb++) {
+        const DcPartitionData* pd = &fc->partition_data[sb];
+        if (!pd->valid) {
+            SVT_WARN("DC: Frame %llu: partition SB[%u] not valid\n",
+                     (unsigned long long)pic, sb);
+            return -1;
+        }
+
+        // Zero-grid detection: partition_map=0 is PARTITION_NONE (valid), but
+        // if block_size_map is ALSO all 0 (BLOCK_4X4 everywhere), this is
+        // suspicious at CRF 0 for non-tiny SBs
+        int all_zero = 1;
+        for (int r = 0; r < DC_PARTITION_MAP_DIM && all_zero; r++)
+            for (int c = 0; c < DC_PARTITION_MAP_DIM && all_zero; c++)
+                if (pd->block_size_map[r][c] != 0)
+                    all_zero = 0;
+        if (all_zero) {
+            SVT_WARN("DC: Frame %llu: SB[%u] block_size_map is all zeros "
+                     "(possible unwritten data)\n",
+                     (unsigned long long)pic, sb);
+            warnings = 1;
+        }
+
+        // Value range checks on every cell of the 32x32 grid
+        for (int r = 0; r < DC_PARTITION_MAP_DIM; r++) {
+            for (int c = 0; c < DC_PARTITION_MAP_DIM; c++) {
+                if (pd->partition_map[r][c] > DC_MAX_PARTITION_TYPE) {
+                    SVT_WARN("DC: Frame %llu: SB[%u][%d][%d] invalid partition %u\n",
+                             (unsigned long long)pic, sb, r, c,
+                             pd->partition_map[r][c]);
+                    return -1;
+                }
+                if (pd->block_size_map[r][c] > DC_MAX_BLOCK_SIZE) {
+                    SVT_WARN("DC: Frame %llu: SB[%u][%d][%d] invalid bsize %u\n",
+                             (unsigned long long)pic, sb, r, c,
+                             pd->block_size_map[r][c]);
+                    return -1;
+                }
+                if (pd->pred_mode_map[r][c] > DC_MAX_PRED_MODE) {
+                    SVT_WARN("DC: Frame %llu: SB[%u][%d][%d] invalid pmode %u\n",
+                             (unsigned long long)pic, sb, r, c,
+                             pd->pred_mode_map[r][c]);
+                    return -1;
+                }
+                // Inter/intra consistency
+                uint8_t is_inter = pd->is_inter_map[r][c];
+                uint8_t pmode    = pd->pred_mode_map[r][c];
+                if (is_inter && pmode < DC_INTER_MODE_START) {
+                    SVT_WARN("DC: Frame %llu: SB[%u][%d][%d] inter flag set but "
+                             "pmode=%u < NEARESTMV(%d)\n",
+                             (unsigned long long)pic, sb, r, c,
+                             pmode, DC_INTER_MODE_START);
+                    return -1;
+                }
+                if (!is_inter && pmode >= DC_INTER_MODE_START) {
+                    SVT_WARN("DC: Frame %llu: SB[%u][%d][%d] intra flag set but "
+                             "pmode=%u >= NEARESTMV(%d)\n",
+                             (unsigned long long)pic, sb, r, c,
+                             pmode, DC_INTER_MODE_START);
+                    return -1;
+                }
+                // MV range for inter blocks
+                if (is_inter) {
+                    int16_t mvx = pd->final_mv[r][c].x;
+                    int16_t mvy = pd->final_mv[r][c].y;
+                    if (mvx <= -DC_MV_LIMIT || mvx >= DC_MV_LIMIT ||
+                        mvy <= -DC_MV_LIMIT || mvy >= DC_MV_LIMIT) {
+                        SVT_WARN("DC: Frame %llu: SB[%u][%d][%d] MV out of "
+                                 "range (%d,%d)\n",
+                                 (unsigned long long)pic, sb, r, c, mvx, mvy);
+                        warnings = 1;
+                    }
+                }
+            }
+        }
+    }
+
+    return warnings ? -2 : 0;
+}
+
 // ---------- Writer Thread ----------
 
 static void* dc_writer_thread(void* arg) {
@@ -37,16 +177,29 @@ static void* dc_writer_thread(void* arg) {
         if (!fc)
             continue;
 
-        // Write to HDF5
-        int ret = hdf5_writer_append_frame(ctx->hdf5_file, fc,
-                                           ctx->b64_total_count,
-                                           ctx->sb_total_count);
-        if (ret == 0) {
-            ctx->frames_written++;
-        } else {
+        // Validate before writing
+        int valid = dc_validate_frame(ctx, fc);
+        if (valid == -1) {
+            ctx->validation_failures++;
             ctx->frames_dropped++;
-            SVT_WARN("DC: Failed to write frame %llu to HDF5\n",
+            SVT_WARN("DC: Frame %llu failed validation, dropping\n",
                      (unsigned long long)fc->picture_number);
+        } else {
+            if (valid == -2)
+                ctx->validation_failures++;
+
+            // Write to HDF5
+            int ret = hdf5_writer_append_frame(ctx->hdf5_writer, fc,
+                                               ctx->b64_total_count,
+                                               ctx->sb_total_count);
+            if (ret == 0) {
+                ctx->frames_written++;
+                ctx->frames_validated++;
+            } else {
+                ctx->frames_dropped++;
+                SVT_WARN("DC: Failed to write frame %llu to HDF5\n",
+                         (unsigned long long)fc->picture_number);
+            }
         }
 
         // Free raw luma copy if allocated
@@ -153,10 +306,10 @@ EbErrorType dc_init(DataCollectionContext** ctx_out,
         return EB_ErrorInsufficientResources;
     }
 
-    // Open HDF5 file
-    ctx->hdf5_file = hdf5_writer_init(output_path, pic_width, pic_height,
-                                       bit_depth, b64_total_count, sb_total_count);
-    if (ctx->hdf5_file < 0) {
+    // Open HDF5 writer
+    ctx->hdf5_writer = hdf5_writer_init(output_path, pic_width, pic_height,
+                                         bit_depth, b64_total_count, sb_total_count);
+    if (!ctx->hdf5_writer) {
         SVT_ERROR("DC: Failed to create HDF5 file: %s\n", output_path);
         dc_destroy(ctx);
         return EB_ErrorBadParameter;
@@ -192,15 +345,21 @@ void dc_destroy(DataCollectionContext* ctx) {
         ctx->writer_thread_handle = NULL;
     }
 
-    // Close HDF5
-    if (ctx->hdf5_file >= 0) {
-        hdf5_writer_close(ctx->hdf5_file);
-        ctx->hdf5_file = -1;
+    // Write final stats to HDF5 before closing
+    if (ctx->hdf5_writer) {
+        hdf5_writer_set_final_stats(ctx->hdf5_writer,
+                                     ctx->frames_written,
+                                     ctx->validation_failures);
+        hdf5_writer_close(ctx->hdf5_writer);
+        ctx->hdf5_writer = NULL;
     }
 
-    SVT_LOG("DC: Data collection finished. Frames written: %llu, dropped: %llu\n",
+    SVT_LOG("DC: Data collection finished. Written: %llu, dropped: %llu, "
+            "validated: %llu, validation_failures: %llu\n",
             (unsigned long long)ctx->frames_written,
-            (unsigned long long)ctx->frames_dropped);
+            (unsigned long long)ctx->frames_dropped,
+            (unsigned long long)ctx->frames_validated,
+            (unsigned long long)ctx->validation_failures);
 
     // Free collectors
     if (ctx->collectors) {

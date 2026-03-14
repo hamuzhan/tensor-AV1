@@ -17,6 +17,9 @@
 #include "mv.h"
 #include "svt_threads.h"
 
+// Forward declaration (defined in hdf5_writer.c)
+struct HDF5WriterState;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -27,6 +30,16 @@ extern "C" {
 #define DC_SQUARE_PU_COUNT     85   // SQUARE_PU_COUNT from me_sb_results.h
 #define DC_MAX_PARTITION_DEPTH 6    // 128x128 -> 4x4 = 5 splits + root
 #define DC_PARTITION_MAP_DIM   32   // 128/4 = 32 (4x4 resolution grid per SB)
+
+// Validation bounds (derived from AV1 spec enums in definitions.h)
+#define DC_MAX_PARTITION_TYPE  9    // PARTITION_VERT_4
+#define DC_MAX_BLOCK_SIZE      21   // BLOCK_SIZES_ALL - 1
+#define DC_MAX_PRED_MODE       24   // MB_MODE_COUNT - 1
+#define DC_INTER_MODE_START    13   // NEARESTMV
+#define DC_MV_LIMIT            16384 // MV_UPP = 1 << 14
+#define DC_MAX_QP              63
+#define DC_MAX_SLICE_TYPE      1    // I_SLICE
+#define DC_MAX_TEMPORAL_LAYER  5    // MAX_TEMPORAL_LAYERS - 1
 
 // ---------- Per-SB Motion Estimation Data ----------
 typedef struct DcMeData {
@@ -126,12 +139,14 @@ typedef struct DataCollectionContext {
     EbHandle writer_thread_handle;
     uint8_t  writer_thread_exit;
 
-    // HDF5 file handle (cast to hid_t internally)
-    int64_t  hdf5_file;
+    // HDF5 writer state (cached handles, buffers, dataspaces)
+    struct HDF5WriterState* hdf5_writer;
 
     // Stats
     uint64_t frames_written;
     uint64_t frames_dropped;
+    uint64_t frames_validated;
+    uint64_t validation_failures;
 
     // Encoder geometry (set once at init)
     uint16_t pic_width;
