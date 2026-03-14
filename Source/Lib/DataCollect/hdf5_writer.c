@@ -40,16 +40,20 @@ typedef enum {
     DSET_PART_PMODE,
     DSET_PART_INTER,
     DSET_PART_FMV,
+    DSET_PART_TXTYPE,
+    DSET_PART_TXDEPTH,
+    DSET_PART_REF0,
+    DSET_PART_REF1,
     DSET_PART_RDCOST,
     DSET_FRAMES_LUMA,
-    DSET_COUNT  // = 10
+    DSET_COUNT  // = 14
 } DatasetIndex;
 
 typedef enum {
     MSPACE_META = 0,       // rank 1: {1}
     MSPACE_ME_MVS,         // rank 6: {1, b64, 2, 4, 85, 2}
     MSPACE_ME_SADS,        // rank 5: {1, b64, 2, 4, 85}
-    MSPACE_PART_MAP,       // rank 4: {1, sb, 32, 32} — shared by 4 partition datasets
+    MSPACE_PART_MAP,       // rank 4: {1, sb, 32, 32} — shared by 8 partition datasets
     MSPACE_PART_FMV,       // rank 5: {1, sb, 32, 32, 2}
     MSPACE_PART_RDCOST,    // rank 3: {1, sb, 6}
     MSPACE_FRAMES_LUMA,    // rank 3: {1, H, W}
@@ -76,6 +80,10 @@ struct HDF5WriterState {
     uint8_t*  pmode_buf;
     uint8_t*  inter_buf;
     int16_t*  fmv_buf;
+    uint8_t*  txtype_buf;
+    uint8_t*  txdepth_buf;
+    int8_t*   ref0_buf;
+    int8_t*   ref1_buf;
     int64_t*  rd_buf;
 };
 
@@ -202,6 +210,14 @@ HDF5WriterState* hdf5_writer_init(const char* output_path,
     hid_t part_group = H5Gcreate2(state->file, "/partition", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
     hid_t frames_group = H5Gcreate2(state->file, "/frames", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
 
+    if (me_group < 0 || part_group < 0 || frames_group < 0) {
+        if (me_group >= 0) H5Gclose(me_group);
+        if (part_group >= 0) H5Gclose(part_group);
+        if (frames_group >= 0) H5Gclose(frames_group);
+        hdf5_writer_close(state);
+        return NULL;
+    }
+
     // Build metadata compound type (cached — NOT closed until hdf5_writer_close)
     state->meta_type = H5Tcreate(H5T_COMPOUND, sizeof(DcFrameMetadata));
     H5Tinsert(state->meta_type, "picture_number", HOFFSET(DcFrameMetadata, picture_number), H5T_NATIVE_UINT64);
@@ -283,6 +299,27 @@ HDF5WriterState* hdf5_writer_init(const char* output_path,
         state->datasets[DSET_PART_INTER] = create_extensible_dataset(
             part_group, "inter", H5T_NATIVE_UINT8, 4, dims, chunk);
         for (int i = DSET_PART_MAP; i <= DSET_PART_INTER; i++) {
+            state->ranks[i] = 4;
+            state->frame_dims[i][0] = 1;
+            state->frame_dims[i][1] = sb_total_count;
+            state->frame_dims[i][2] = DC_PARTITION_MAP_DIM;
+            state->frame_dims[i][3] = DC_PARTITION_MAP_DIM;
+        }
+    }
+
+    // Partition transform and reference datasets: [0, sbs, 32, 32]
+    {
+        hsize_t dims[4] = {0, sb_total_count, DC_PARTITION_MAP_DIM, DC_PARTITION_MAP_DIM};
+        hsize_t chunk[4] = {DC_CHUNK_FRAMES, sb_total_count, DC_PARTITION_MAP_DIM, DC_PARTITION_MAP_DIM};
+        state->datasets[DSET_PART_TXTYPE] = create_extensible_dataset(
+            part_group, "txtype", H5T_NATIVE_UINT8, 4, dims, chunk);
+        state->datasets[DSET_PART_TXDEPTH] = create_extensible_dataset(
+            part_group, "txdepth", H5T_NATIVE_UINT8, 4, dims, chunk);
+        state->datasets[DSET_PART_REF0] = create_extensible_dataset(
+            part_group, "ref0", H5T_NATIVE_INT8, 4, dims, chunk);
+        state->datasets[DSET_PART_REF1] = create_extensible_dataset(
+            part_group, "ref1", H5T_NATIVE_INT8, 4, dims, chunk);
+        for (int i = DSET_PART_TXTYPE; i <= DSET_PART_REF1; i++) {
             state->ranks[i] = 4;
             state->frame_dims[i][0] = 1;
             state->frame_dims[i][1] = sb_total_count;
@@ -377,6 +414,10 @@ HDF5WriterState* hdf5_writer_init(const char* output_path,
     state->dset_to_mspace[DSET_PART_BSIZE]  = MSPACE_PART_MAP;  // shared
     state->dset_to_mspace[DSET_PART_PMODE]  = MSPACE_PART_MAP;  // shared
     state->dset_to_mspace[DSET_PART_INTER]  = MSPACE_PART_MAP;  // shared
+    state->dset_to_mspace[DSET_PART_TXTYPE] = MSPACE_PART_MAP;  // shared
+    state->dset_to_mspace[DSET_PART_TXDEPTH]= MSPACE_PART_MAP;  // shared
+    state->dset_to_mspace[DSET_PART_REF0]   = MSPACE_PART_MAP;  // shared
+    state->dset_to_mspace[DSET_PART_REF1]   = MSPACE_PART_MAP;  // shared
     state->dset_to_mspace[DSET_PART_FMV]    = MSPACE_PART_FMV;
     state->dset_to_mspace[DSET_PART_RDCOST] = MSPACE_PART_RDCOST;
     state->dset_to_mspace[DSET_FRAMES_LUMA] = MSPACE_FRAMES_LUMA;
@@ -394,12 +435,17 @@ HDF5WriterState* hdf5_writer_init(const char* output_path,
     state->bsize_buf = (uint8_t*)malloc(map_count);
     state->pmode_buf = (uint8_t*)malloc(map_count);
     state->inter_buf = (uint8_t*)malloc(map_count);
-    state->fmv_buf   = (int16_t*)malloc(fmv_count * sizeof(int16_t));
-    state->rd_buf    = (int64_t*)malloc(rd_count * sizeof(int64_t));
+    state->fmv_buf     = (int16_t*)malloc(fmv_count * sizeof(int16_t));
+    state->txtype_buf  = (uint8_t*)malloc(map_count);
+    state->txdepth_buf = (uint8_t*)malloc(map_count);
+    state->ref0_buf    = (int8_t*)malloc(map_count);
+    state->ref1_buf    = (int8_t*)malloc(map_count);
+    state->rd_buf      = (int64_t*)malloc(rd_count * sizeof(int64_t));
 
     if (!state->mv_buf || !state->sad_buf || !state->map_buf ||
         !state->bsize_buf || !state->pmode_buf || !state->inter_buf ||
-        !state->fmv_buf || !state->rd_buf) {
+        !state->fmv_buf || !state->txtype_buf || !state->txdepth_buf ||
+        !state->ref0_buf || !state->ref1_buf || !state->rd_buf) {
         SVT_ERROR("DC: Failed to allocate reshape buffers\n");
         hdf5_writer_close(state);
         return NULL;
@@ -414,7 +460,7 @@ int hdf5_writer_append_frame(HDF5WriterState* state,
                               const FrameDataCollector* fc,
                               uint16_t b64_total_count,
                               uint16_t sb_total_count) {
-    if (!state || state->file < 0 || !fc)
+    if (!state || state->file < 0 || !fc || !fc->me_data || !fc->partition_data)
         return -1;
 
     int errors = 0;
@@ -459,10 +505,14 @@ int hdf5_writer_append_frame(HDF5WriterState* state,
         for (uint16_t sb = 0; sb < sb_total_count; sb++) {
             for (int r = 0; r < DC_PARTITION_MAP_DIM; r++) {
                 for (int c = 0; c < DC_PARTITION_MAP_DIM; c++) {
-                    state->map_buf[idx]   = fc->partition_data[sb].partition_map[r][c];
-                    state->bsize_buf[idx] = fc->partition_data[sb].block_size_map[r][c];
-                    state->pmode_buf[idx] = fc->partition_data[sb].pred_mode_map[r][c];
-                    state->inter_buf[idx] = fc->partition_data[sb].is_inter_map[r][c];
+                    state->map_buf[idx]     = fc->partition_data[sb].partition_map[r][c];
+                    state->bsize_buf[idx]   = fc->partition_data[sb].block_size_map[r][c];
+                    state->pmode_buf[idx]   = fc->partition_data[sb].pred_mode_map[r][c];
+                    state->inter_buf[idx]   = fc->partition_data[sb].is_inter_map[r][c];
+                    state->txtype_buf[idx]  = fc->partition_data[sb].tx_type_map[r][c];
+                    state->txdepth_buf[idx] = fc->partition_data[sb].tx_depth_map[r][c];
+                    state->ref0_buf[idx]    = fc->partition_data[sb].ref_frame0_map[r][c];
+                    state->ref1_buf[idx]    = fc->partition_data[sb].ref_frame1_map[r][c];
                     idx++;
                 }
             }
@@ -470,7 +520,11 @@ int hdf5_writer_append_frame(HDF5WriterState* state,
         errors += (append_to_cached_dataset(state, DSET_PART_MAP,   state->map_buf,   H5T_NATIVE_UINT8) < 0);
         errors += (append_to_cached_dataset(state, DSET_PART_BSIZE, state->bsize_buf, H5T_NATIVE_UINT8) < 0);
         errors += (append_to_cached_dataset(state, DSET_PART_PMODE, state->pmode_buf, H5T_NATIVE_UINT8) < 0);
-        errors += (append_to_cached_dataset(state, DSET_PART_INTER, state->inter_buf, H5T_NATIVE_UINT8) < 0);
+        errors += (append_to_cached_dataset(state, DSET_PART_INTER,   state->inter_buf,   H5T_NATIVE_UINT8) < 0);
+        errors += (append_to_cached_dataset(state, DSET_PART_TXTYPE,  state->txtype_buf,  H5T_NATIVE_UINT8) < 0);
+        errors += (append_to_cached_dataset(state, DSET_PART_TXDEPTH, state->txdepth_buf, H5T_NATIVE_UINT8) < 0);
+        errors += (append_to_cached_dataset(state, DSET_PART_REF0,    state->ref0_buf,    H5T_NATIVE_INT8) < 0);
+        errors += (append_to_cached_dataset(state, DSET_PART_REF1,    state->ref1_buf,    H5T_NATIVE_INT8) < 0);
 
         // Final MVs
         idx = 0;
@@ -566,6 +620,10 @@ void hdf5_writer_close(HDF5WriterState* state) {
     free(state->pmode_buf);
     free(state->inter_buf);
     free(state->fmv_buf);
+    free(state->txtype_buf);
+    free(state->txdepth_buf);
+    free(state->ref0_buf);
+    free(state->ref1_buf);
     free(state->rd_buf);
 
     free(state);

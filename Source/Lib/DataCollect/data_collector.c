@@ -47,7 +47,9 @@ static int dc_validate_frame(const DataCollectionContext* ctx,
     }
 
     // 2. ME data completeness and value range
-    for (uint16_t b64 = 0; b64 < ctx->b64_total_count; b64++) {
+    // Skip ME validation for I-frames (no motion estimation performed)
+    uint8_t is_i_slice = (fc->metadata.slice_type == DC_MAX_SLICE_TYPE);
+    for (uint16_t b64 = 0; b64 < ctx->b64_total_count && !is_i_slice; b64++) {
         const DcMeData* me = &fc->me_data[b64];
         if (!me->valid) {
             SVT_WARN("DC: Frame %llu: ME b64[%u] not valid\n",
@@ -133,6 +135,33 @@ static int dc_validate_frame(const DataCollectionContext* ctx,
                              "pmode=%u >= NEARESTMV(%d)\n",
                              (unsigned long long)pic, sb, r, c,
                              pmode, DC_INTER_MODE_START);
+                    return -1;
+                }
+                // Transform type and depth range
+                if (pd->tx_type_map[r][c] > DC_MAX_TX_TYPE) {
+                    SVT_WARN("DC: Frame %llu: SB[%u][%d][%d] invalid tx_type %u\n",
+                             (unsigned long long)pic, sb, r, c,
+                             pd->tx_type_map[r][c]);
+                    return -1;
+                }
+                if (pd->tx_depth_map[r][c] > DC_MAX_TX_DEPTH) {
+                    SVT_WARN("DC: Frame %llu: SB[%u][%d][%d] invalid tx_depth %u\n",
+                             (unsigned long long)pic, sb, r, c,
+                             pd->tx_depth_map[r][c]);
+                    return -1;
+                }
+                // Reference frame range for inter blocks
+                if (is_inter && (pd->ref_frame0_map[r][c] < 1 ||
+                                 pd->ref_frame0_map[r][c] > DC_MAX_REF_FRAME)) {
+                    SVT_WARN("DC: Frame %llu: SB[%u][%d][%d] invalid ref_frame0 %d\n",
+                             (unsigned long long)pic, sb, r, c,
+                             pd->ref_frame0_map[r][c]);
+                    return -1;
+                }
+                if (is_inter && pd->ref_frame1_map[r][c] > DC_MAX_REF_FRAME) {
+                    SVT_WARN("DC: Frame %llu: SB[%u][%d][%d] invalid ref_frame1 %d\n",
+                             (unsigned long long)pic, sb, r, c,
+                             pd->ref_frame1_map[r][c]);
                     return -1;
                 }
                 // MV range for inter blocks
@@ -241,6 +270,7 @@ EbErrorType dc_init(DataCollectionContext** ctx_out,
 
     // Configuration
     strncpy(ctx->output_path, output_path, sizeof(ctx->output_path) - 1);
+    ctx->output_path[sizeof(ctx->output_path) - 1] = '\0';
     ctx->capture_raw_frames = 0;
     ctx->capture_me         = 1;
     ctx->capture_partition  = 1;
@@ -404,6 +434,7 @@ FrameDataCollector* dc_get_collector(DataCollectionContext* ctx, uint64_t pictur
 
     // If slot is occupied by another picture, drop
     if (fc->in_use) {
+        ctx->frames_dropped++;
         svt_release_mutex(ctx->pool_mutex);
         return NULL;
     }

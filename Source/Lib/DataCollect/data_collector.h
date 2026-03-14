@@ -40,6 +40,9 @@ extern "C" {
 #define DC_MAX_QP              63
 #define DC_MAX_SLICE_TYPE      1    // I_SLICE
 #define DC_MAX_TEMPORAL_LAYER  5    // MAX_TEMPORAL_LAYERS - 1
+#define DC_MAX_TX_TYPE         16   // TX_TYPES
+#define DC_MAX_TX_DEPTH        2    // max transform subdivision depth
+#define DC_MAX_REF_FRAME       7    // ALTREF_FRAME
 
 // ---------- Per-SB Motion Estimation Data ----------
 typedef struct DcMeData {
@@ -61,6 +64,10 @@ typedef struct DcPartitionData {
     uint8_t pred_mode_map[DC_PARTITION_MAP_DIM][DC_PARTITION_MAP_DIM];   // PredictionMode
     uint8_t is_inter_map[DC_PARTITION_MAP_DIM][DC_PARTITION_MAP_DIM];
     Mv      final_mv[DC_PARTITION_MAP_DIM][DC_PARTITION_MAP_DIM];
+    uint8_t tx_type_map[DC_PARTITION_MAP_DIM][DC_PARTITION_MAP_DIM];    // TxType enum
+    uint8_t tx_depth_map[DC_PARTITION_MAP_DIM][DC_PARTITION_MAP_DIM];   // 0-2
+    int8_t  ref_frame0_map[DC_PARTITION_MAP_DIM][DC_PARTITION_MAP_DIM]; // primary ref
+    int8_t  ref_frame1_map[DC_PARTITION_MAP_DIM][DC_PARTITION_MAP_DIM]; // compound ref
     int64_t rd_cost_by_depth[DC_MAX_PARTITION_DEPTH];
     uint16_t sb_origin_x;
     uint16_t sb_origin_y;

@@ -305,6 +305,18 @@ void* svt_aom_motion_estimation_kernel(void* input_ptr) {
                     }
                 }
             }
+#ifdef ENABLE_DATA_COLLECTION
+            // For I-frames or skipped pictures, ME loop is never entered so
+            // dc_signal_me_complete() is never called inside the loop.
+            // Signal ME completion here so the frame can still be written to HDF5.
+            if (skip_me || pcs->slice_type == I_SLICE) {
+                if (scs->dc_ctx) {
+                    FrameDataCollector* fc = dc_get_collector(scs->dc_ctx, pcs->picture_number);
+                    if (fc)
+                        dc_signal_me_complete(scs->dc_ctx, fc);
+                }
+            }
+#endif
             // Get Empty Results Object
             svt_get_empty_object(me_context_ptr->motion_estimation_results_output_fifo_ptr, &out_results_wrapper);
 
